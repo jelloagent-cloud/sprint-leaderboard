@@ -392,3 +392,73 @@ document.addEventListener('DOMContentLoaded', async function() {
   </script>
 </body>
 </html>
+
+<!-- Live data wiring: fetch /api/scores and hand the rows to the board.
+     Appended after the Claude Design bundle on purpose — nothing above is edited. -->
+<script>
+(function () {
+  "use strict";
+
+  var ENDPOINT       = "/api/scores";
+  var POLL_MS        = 5 * 60 * 1000; // refresh every 5 minutes
+  var FIRST_DELAY_MS = 1500;          // let the board mount before the first apply
+  var BOARD_WAIT_MS  = 15000;         // give up waiting for SprintBoard after this
+  var BOARD_POLL_MS  = 250;
+
+  function boardReady() {
+    return !!(window.SprintBoard && typeof window.SprintBoard.apply === "function");
+  }
+
+  // SprintBoard is created in the board's componentDidMount, so it may not
+  // exist yet even after DOMContentLoaded.
+  function whenBoardReady(fn) {
+    var waited = 0;
+    (function check() {
+      if (boardReady()) return fn();
+      waited += BOARD_POLL_MS;
+      if (waited >= BOARD_WAIT_MS) {
+        console.error("[sprint] window.SprintBoard.apply never appeared — board not wired.");
+        return;
+      }
+      setTimeout(check, BOARD_POLL_MS);
+    })();
+  }
+
+  function refresh() {
+    // no-store: standings are always recomputed live, never read from cache
+    fetch(ENDPOINT, { cache: "no-store", headers: { Accept: "application/json" } })
+      .then(function (res) {
+        if (!res.ok) throw new Error(ENDPOINT + " responded " + res.status);
+        return res.json();
+      })
+      .then(function (data) {
+        if (data && data.error) throw new Error(data.error);
+        if (!data || !Array.isArray(data.tasks)) throw new Error("malformed payload — no tasks array");
+        if (!boardReady()) throw new Error("window.SprintBoard.apply is unavailable");
+        if (data.warnings && data.warnings.length) {
+          console.warn("[sprint] " + data.warnings.length + " warning(s) from " + ENDPOINT + ":", data.warnings);
+        }
+        window.SprintBoard.apply(data.tasks, data.fetchedAt || Date.now());
+      })
+      .catch(function (err) {
+        // Leave the last good standings on screen and try again on the next tick.
+        console.error("[sprint] score refresh failed:", err);
+      });
+  }
+
+  function start() {
+    setTimeout(function () {
+      whenBoardReady(function () {
+        refresh();
+        setInterval(refresh, POLL_MS);
+      });
+    }, FIRST_DELAY_MS);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", start);
+  } else {
+    start();
+  }
+})();
+</script>
