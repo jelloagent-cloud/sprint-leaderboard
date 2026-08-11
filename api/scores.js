@@ -53,6 +53,9 @@ const NAME_MAP = {
   // "Pac Vishnu": "Vishnu",
 };
 
+// Editors excluded from the sprint (exact ClickUp usernames)
+const EXCLUDE = ["MJ NEW"];
+
 // Sprint window — CEST (UTC+2) in August
 const WINDOW_START = 1786312800000; // Mon Aug 10 2026 00:00 CEST
 const WINDOW_END   = 1788213600000; // Tue Sep  1 2026 00:00 CEST
@@ -96,6 +99,7 @@ function mapTask(task, warnings) {
   }
   const rawName = editor.username || editor.email || String(editor.id);
   const editorName = NAME_MAP[rawName] || rawName;
+  if (EXCLUDE.includes(rawName)) return null;
 
   // revision rounds = how many "Date Needs Edits" fields are filled
   const rounds = F.needEdits.reduce(
