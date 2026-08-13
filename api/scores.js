@@ -49,8 +49,11 @@ const VSL_OVERRIDES_HEAVY = true;
 const CONCEPT_VSL_ID = "f10dcc62-5fd4-4861-9727-b653f14cfb20";
 
 // Optional: rename a ClickUp username for display. Keys must match ClickUp exactly.
+// The VALUE must match the board's roster spelling exactly too — the roster lives
+// in index.html and any name that differs by even one letter shows up as a second,
+// empty row on the board instead of merging into the editor's own row.
 const NAME_MAP = {
-  // "Pac Vishnu": "Vishnu",
+  "Joshua cecil": "joshua Cecil", // ClickUp says "Joshua cecil"; roster says "joshua Cecil"
 };
 
 // Editors excluded from the sprint (exact ClickUp usernames)
@@ -59,6 +62,23 @@ const EXCLUDE = ["MJ NEW"];
 // Sprint window — CEST (UTC+2) in August
 const WINDOW_START = 1786312800000; // Mon Aug 10 2026 00:00 CEST
 const WINDOW_END   = 1788213600000; // Tue Sep  1 2026 00:00 CEST
+
+// --- Accidental "Needs Edits" detection -------------------------------------
+// A ClickUp automation stamps "Date Needs Edits N" the moment a task enters the
+// "needs edits" status. If someone drops a task in there by mistake and pulls it
+// straight back out, the stamp sticks and the editor loses a clean batch for a
+// revision that never happened.
+//
+// A real round leaves hours or days of recorded time in the status; a misclick
+// leaves none. So we cross-check the stamps against ClickUp's time-in-status
+// record and drop rounds that no status time backs up.
+//
+// NOTE ON THE THRESHOLD: ClickUp's time-in-status API reports whole MINUTES, so
+// "under 10 seconds" is not expressible — the finest available test is "no
+// recorded time at all", i.e. under a minute. That is a superset of the 10-second
+// rule and still nowhere near a real round (a real one measured 2,445 minutes).
+const NEEDS_EDITS_STATUS = "needs edits";
+const MISCLICK_MAX_MINUTES = 1;
 
 // ---------------------------------------------------------------------------
 function fieldValue(task, id) {
@@ -70,6 +90,18 @@ function toMillis(v) {
   if (v === undefined || v === null || v === "") return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
+}
+
+function neFor(rounds) {
+  return rounds >= 4 ? "3+" : String(rounds);
+}
+
+// Board expects one entry per round, CS-fault rounds first.
+function faultsFor(rounds, csFault) {
+  return [
+    ...Array(csFault).fill("Brief"),
+    ...Array(rounds - csFault).fill("Editor"),
+  ];
 }
 
 async function fetchAllTasks(token) {
@@ -85,6 +117,49 @@ async function fetchAllTasks(token) {
     if (data.last_page || !data.tasks || data.tasks.length === 0) break;
   }
   return tasks;
+}
+
+// Minutes each task has spent in the "needs edits" status, keyed by task id.
+// Only called for the handful of in-window tasks that carry a stamp.
+async function fetchNeedsEditsMinutes(token, ids) {
+  const out = new Map();
+  const isNeedsEdits = (s) =>
+    String(s || "").trim().toLowerCase() === NEEDS_EDITS_STATUS;
+
+  for (let i = 0; i < ids.length; i += 100) {
+    const chunk = ids.slice(i, i + 100);
+    const qs = chunk.map((id) => `task_ids[]=${encodeURIComponent(id)}`).join("&");
+    const res = await fetch(
+      `https://api.clickup.com/api/v2/task/bulk_time_in_status/task_ids?${qs}`,
+      { headers: { Authorization: token } }
+    );
+    if (!res.ok) {
+      throw new Error(`ClickUp time-in-status ${res.status}: ${await res.text()}`);
+    }
+    const data = await res.json();
+    const byId = data.tasks || data; // endpoint has shipped both shapes
+
+    for (const id of Object.keys(byId)) {
+      const entry = byId[id] || {};
+      const history = entry.status_history || [];
+      let minutes = 0;
+      let seen = false;
+      for (const h of history) {
+        if (isNeedsEdits(h.status)) {
+          minutes += Number(h.total_time_minutes) || 0;
+          seen = true;
+        }
+      }
+      // history normally already includes the current status; only add it
+      // separately when it does not, so the time is never counted twice.
+      const cur = entry.current_status;
+      if (!seen && cur && isNeedsEdits(cur.status)) {
+        minutes += Number(cur.total_time_minutes) || 0;
+      }
+      out.set(id, minutes);
+    }
+  }
+  return out;
 }
 
 function mapTask(task, warnings) {
@@ -116,15 +191,6 @@ function mapTask(task, warnings) {
     csFault = rounds;
   }
 
-  // Board expects a faults array, one entry per round.
-  const faults = [
-    ...Array(csFault).fill("Brief"),
-    ...Array(rounds - csFault).fill("Editor"),
-  ];
-
-  // Board expects ne as the dropdown-style string
-  const ne = rounds >= 4 ? "3+" : String(rounds);
-
   // format label name — take the heaviest if several are set
   const labels = fieldValue(task, F.format);
   let format = "";
@@ -147,13 +213,20 @@ function mapTask(task, warnings) {
   if (!format) warnings.push(`${task.name}: no Format label — scored untiered`);
 
   return {
-    batch: task.name,
-    editor: editorName,
-    format,
-    ne,
-    faults,
-    rtl,
-    rfe: toMillis(fieldValue(task, F.readyForEdit)),
+    id: task.id,
+    rounds,
+    csFault,
+    row: {
+      batch: task.name,
+      editor: editorName,
+      format,
+      ne: neFor(rounds),
+      faults: faultsFor(rounds, csFault),
+      rtl,
+      rfe: toMillis(fieldValue(task, F.readyForEdit)),
+      // extra field, ignored by the board — the drill-down panel links to it
+      url: task.url || `https://app.clickup.com/t/${task.id}`,
+    },
   };
 }
 
@@ -164,7 +237,43 @@ export default async function handler(req, res) {
   try {
     const warnings = [];
     const raw = await fetchAllTasks(token);
-    const tasks = raw.map((t) => mapTask(t, warnings)).filter(Boolean);
+    const mapped = raw.map((t) => mapTask(t, warnings)).filter(Boolean);
+
+    // Cross-check stamped rounds against recorded time in "needs edits".
+    let misclicksDropped = 0;
+    const stamped = mapped.filter((m) => m.rounds > 0);
+    if (stamped.length) {
+      try {
+        const minutes = await fetchNeedsEditsMinutes(
+          token,
+          stamped.map((m) => m.id)
+        );
+        for (const m of stamped) {
+          const mins = minutes.get(m.id);
+          if (mins === undefined) continue; // no record → leave the stamp alone
+          if (mins >= MISCLICK_MAX_MINUTES) continue; // real round(s)
+          // Every stamp on this task is unbacked by status time.
+          warnings.push(
+            `${m.row.batch}: ${m.rounds} Needs Edits stamp(s) but no recorded ` +
+              `time in "${NEEDS_EDITS_STATUS}" — treated as accidental, not counted`
+          );
+          m.rounds = 0;
+          m.csFault = 0;
+          m.row.ne = neFor(0);
+          m.row.faults = [];
+          misclicksDropped++;
+        }
+      } catch (err) {
+        // Never let this break the board: fall back to the raw stamps.
+        warnings.push(
+          `Could not check time-in-status, revision stamps left as-is: ${
+            err.message || err
+          }`
+        );
+      }
+    }
+
+    const tasks = mapped.map((m) => m.row);
 
     res.setHeader("Cache-Control", "s-maxage=60, stale-while-revalidate=300");
     return res.status(200).json({
@@ -172,6 +281,7 @@ export default async function handler(req, res) {
       tasks,
       taskCount: tasks.length,
       scannedCount: raw.length,
+      misclicksDropped,
       warnings,
     });
   } catch (err) {

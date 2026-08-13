@@ -393,8 +393,13 @@ document.addEventListener('DOMContentLoaded', async function() {
 </body>
 </html>
 
-<!-- Live data wiring: fetch /api/scores and hand the rows to the board.
-     Appended after the Claude Design bundle on purpose — nothing above is edited. -->
+<!-- Live data wiring + per-editor batch drill-down.
+     Appended after the Claude Design bundle on purpose — nothing above is edited.
+     Everything here is namespaced `sbx-` so it cannot collide with bundle CSS.
+
+     The CSS is injected into <head> from JS rather than written as a <style>
+     tag: this markup lands after </body>, so the parser puts it in <body>,
+     and the board wipes <body>'s children when it renders. -->
 <script>
 (function () {
   "use strict";
@@ -405,6 +410,319 @@ document.addEventListener('DOMContentLoaded', async function() {
   var BOARD_WAIT_MS  = 15000;         // give up waiting for SprintBoard after this
   var BOARD_POLL_MS  = 250;
 
+  var CSS = [
+    ".sbx-hit { cursor: pointer; border-bottom: 1px dotted rgba(255,255,255,0.38); }",
+    ".sbx-overlay { position: fixed; inset: 0; z-index: 2147483000; display: flex;",
+    "  align-items: center; justify-content: center; padding: 20px;",
+    "  background: rgba(4,9,26,0.72); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }",
+    ".sbx-overlay[hidden] { display: none; }",
+    ".sbx-panel { width: 100%; max-width: 460px; max-height: 82vh; overflow-y: auto;",
+    "  -webkit-overflow-scrolling: touch; border-radius: 18px;",
+    "  border: 1px solid rgba(255,255,255,0.12); background: #0d1530; color: #fff;",
+    "  font-family: Inter, system-ui, sans-serif; box-shadow: 0 24px 60px rgba(0,0,0,0.55); }",
+    ".sbx-head { display: flex; align-items: flex-start; gap: 12px; padding: 18px 18px 12px;",
+    "  position: sticky; top: 0; background: #0d1530;",
+    "  border-bottom: 1px solid rgba(255,255,255,0.08); }",
+    ".sbx-name { font-size: 18px; font-weight: 700; line-height: 1.2; }",
+    ".sbx-sub { margin-top: 5px; font-size: 11px; letter-spacing: .07em;",
+    "  text-transform: uppercase; color: rgba(255,255,255,0.5); }",
+    ".sbx-close { margin-left: auto; flex: none; width: 30px; height: 30px; border-radius: 999px;",
+    "  border: 1px solid rgba(255,255,255,0.16); background: transparent; color: #fff;",
+    "  font-size: 15px; line-height: 1; cursor: pointer; }",
+    ".sbx-list { padding: 12px 14px 4px; display: flex; flex-direction: column; gap: 8px; }",
+    ".sbx-row { display: block; padding: 12px 13px; border-radius: 13px;",
+    "  background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.07);",
+    "  text-decoration: none; color: #fff; }",
+    "a.sbx-row:hover { background: rgba(76,125,240,0.16); border-color: rgba(76,125,240,0.5); }",
+    ".sbx-batch { font-weight: 650; font-size: 14px; }",
+    ".sbx-meta { margin-top: 6px; font-size: 12px; color: rgba(255,255,255,0.62);",
+    "  display: flex; flex-wrap: wrap; gap: 6px 9px; align-items: center; }",
+    ".sbx-badge { font-size: 10px; letter-spacing: .07em; text-transform: uppercase;",
+    "  padding: 3px 7px; border-radius: 999px; font-weight: 700; }",
+    ".sbx-clean { background: rgba(52,199,123,0.16); color: #54d99a; }",
+    ".sbx-dirty { background: rgba(240,90,90,0.15); color: #ff8f8f; }",
+    ".sbx-brief { background: rgba(255,255,255,0.10); color: rgba(255,255,255,0.72); }",
+    ".sbx-empty { padding: 4px 4px 10px; font-size: 13px; color: rgba(255,255,255,0.6); }",
+    ".sbx-foot { padding: 10px 18px 16px; font-size: 11px; color: rgba(255,255,255,0.4); }",
+    "@media (max-width: 520px) {",
+    "  .sbx-overlay { align-items: flex-end; padding: 0; }",
+    "  .sbx-panel { max-width: none; max-height: 86vh; border-radius: 18px 18px 0 0; }",
+    "}"
+  ].join("\n");
+
+  function injectCss() {
+    if (document.getElementById("sbx-css")) return;
+    var s = document.createElement("style");
+    s.id = "sbx-css";
+    s.textContent = CSS;
+    (document.head || document.documentElement).appendChild(s);
+  }
+
+  // Tier table mirrors the one inside the bundle. Display only — the board still
+  // does all the scoring; this is just so a row can say "AI-UGC ×1.2".
+  var TIER = {};
+  [["Light", 1.0, ["Animation", "Static", "Text-Only UGC", "Yapping-UGC"]],
+   ["Standard", 1.2, ["AI-Podcast", "AI-UGC", "Native Ad"]],
+   ["Heavy", 1.5, ["Voiceover", "Voiceover-UGC", "Educational-VO", "Talking Animation"]]
+  ].forEach(function (t) {
+    t[2].forEach(function (f) { TIER[f] = { name: t[0], mult: t[1] }; });
+  });
+
+  var rows = [];
+
+  // ---- same round/clean reading as the bundle ------------------------------
+  function neNum(v) { return v === "3+" ? 4 : (parseInt(v, 10) || 0); }
+
+  function isClean(t) {
+    var n = neNum(t.ne);
+    if (!n) return true;
+    var f = t.faults || [];
+    return f.length >= n && f.every(function (x) { return x !== "Editor"; });
+  }
+
+  function editorFaults(t) {
+    var f = t.faults || [];
+    return f.length ? f.filter(function (x) { return x === "Editor"; }).length : neNum(t.ne);
+  }
+
+  function briefFaults(t) {
+    return (t.faults || []).filter(function (x) { return x === "Brief"; }).length;
+  }
+
+  function fmtDate(ms) {
+    try {
+      return new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+    } catch (e) {
+      return "";
+    }
+  }
+
+  // ---- drill-down panel ---------------------------------------------------
+  var overlay, elName, elSub, elList, elFoot;
+
+  function buildPanel() {
+    injectCss();
+
+    overlay = document.createElement("div");
+    overlay.className = "sbx-overlay";
+    overlay.hidden = true;
+
+    var panel = document.createElement("div");
+    panel.className = "sbx-panel";
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-modal", "true");
+
+    var head = document.createElement("div");
+    head.className = "sbx-head";
+    var titles = document.createElement("div");
+    elName = document.createElement("div");
+    elName.className = "sbx-name";
+    elSub = document.createElement("div");
+    elSub.className = "sbx-sub";
+    titles.appendChild(elName);
+    titles.appendChild(elSub);
+
+    var close = document.createElement("button");
+    close.className = "sbx-close";
+    close.type = "button";
+    close.textContent = "✕";
+    close.setAttribute("aria-label", "Close");
+    close.addEventListener("click", closePanel);
+
+    head.appendChild(titles);
+    head.appendChild(close);
+
+    elList = document.createElement("div");
+    elList.className = "sbx-list";
+    elFoot = document.createElement("div");
+    elFoot.className = "sbx-foot";
+
+    panel.appendChild(head);
+    panel.appendChild(elList);
+    panel.appendChild(elFoot);
+    overlay.appendChild(panel);
+
+    overlay.addEventListener("click", function (e) {
+      if (e.target === overlay) closePanel();
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && overlay && !overlay.hidden) closePanel();
+    });
+
+    document.body.appendChild(overlay);
+  }
+
+  // the board re-renders by replacing body children, which can take the panel
+  // (and the stylesheet, if it ever lands in body) with it
+  function ensurePanel() {
+    if (!overlay) { buildPanel(); return; }
+    injectCss();
+    if (!document.body.contains(overlay)) document.body.appendChild(overlay);
+  }
+
+  function batchRow(t) {
+    var isLink = typeof t.url === "string" && /^https:\/\//.test(t.url);
+    var el = document.createElement(isLink ? "a" : "div");
+    el.className = "sbx-row";
+    if (isLink) {
+      el.href = t.url;
+      el.target = "_blank";
+      el.rel = "noopener noreferrer";
+    }
+
+    var name = document.createElement("div");
+    name.className = "sbx-batch";
+    name.textContent = t.batch || "(unnamed batch)";
+    el.appendChild(name);
+
+    var meta = document.createElement("div");
+    meta.className = "sbx-meta";
+
+    var badge = document.createElement("span");
+    var ed = editorFaults(t);
+    if (isClean(t)) {
+      badge.className = "sbx-badge sbx-clean";
+      badge.textContent = "Clean";
+    } else {
+      badge.className = "sbx-badge sbx-dirty";
+      badge.textContent = ed + (ed === 1 ? " editor round" : " editor rounds");
+    }
+    meta.appendChild(badge);
+
+    var brief = briefFaults(t);
+    if (brief) {
+      var b = document.createElement("span");
+      b.className = "sbx-badge sbx-brief";
+      b.textContent = brief + (brief === 1 ? " brief round" : " brief rounds");
+      meta.appendChild(b);
+    }
+
+    var tier = TIER[t.format];
+    var fmt = document.createElement("span");
+    fmt.textContent = t.format
+      ? t.format + (tier ? " ×" + tier.mult.toFixed(1) : " (untiered)")
+      : "no format label";
+    meta.appendChild(fmt);
+
+    if (t.rtl) {
+      var when = document.createElement("span");
+      when.textContent = "launched " + fmtDate(t.rtl);
+      meta.appendChild(when);
+    }
+
+    el.appendChild(meta);
+    return el;
+  }
+
+  function openPanel(name) {
+    ensurePanel();
+
+    var mine = rows.filter(function (r) { return r.editor === name; })
+                   .sort(function (a, b) { return (b.rtl || 0) - (a.rtl || 0); });
+    var cleanCount = mine.filter(isClean).length;
+
+    elName.textContent = name;
+    elSub.textContent = mine.length
+      ? mine.length + " delivered · " + cleanCount + " clean"
+      : "no batches in the sprint window yet";
+
+    while (elList.firstChild) elList.removeChild(elList.firstChild);
+    if (!mine.length) {
+      var empty = document.createElement("div");
+      empty.className = "sbx-empty";
+      empty.textContent = "Nothing at Ready-to-Launch inside Aug 10 – Aug 31 yet.";
+      elList.appendChild(empty);
+    } else {
+      mine.forEach(function (t) { elList.appendChild(batchRow(t)); });
+    }
+
+    elFoot.textContent = mine.length ? "Tap a batch to open it in ClickUp." : "";
+
+    overlay.hidden = false;
+    document.documentElement.style.overflow = "hidden";
+  }
+
+  function closePanel() {
+    if (overlay) overlay.hidden = true;
+    document.documentElement.style.overflow = "";
+  }
+
+  // ---- make names clickable ----------------------------------------------
+  // Names are plain interpolated spans in the bundle, so match on exact text
+  // against the names we actually know about.
+  function knownNames() {
+    var set = Object.create(null);
+    rows.forEach(function (r) { if (r.editor) set[r.editor] = true; });
+    var chase = document.querySelectorAll("[data-chase-key]");
+    for (var i = 0; i < chase.length; i++) {
+      var k = chase[i].getAttribute("data-chase-key");
+      if (k) set[k] = true;
+    }
+    return set;
+  }
+
+  function bindNames() {
+    if (!overlay) return;
+    var names = knownNames();
+
+    // leaf elements whose text is exactly an editor name
+    var all = document.querySelectorAll("span, div");
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      if (el.children.length) continue;
+      if (overlay.contains(el)) continue;
+      var t = (el.textContent || "").trim();
+      if (!t || !names[t]) continue;
+      if (el.getAttribute("data-sbx") === t) continue;
+      el.setAttribute("data-sbx", t);
+      el.classList.add("sbx-hit");
+      el.title = "Show " + t + "'s batches";
+    }
+
+    // whole chase row is tappable (easier on a phone)
+    var chase = document.querySelectorAll("[data-chase-key]");
+    for (var j = 0; j < chase.length; j++) {
+      var key = chase[j].getAttribute("data-chase-key");
+      if (key && names[key] && chase[j].getAttribute("data-sbx") !== key) {
+        chase[j].setAttribute("data-sbx", key);
+        chase[j].style.cursor = "pointer";
+      }
+    }
+
+    // whole podium card is tappable
+    ["data-pr1", "data-pr2", "data-pr3"].forEach(function (attr) {
+      var card = document.querySelector("[" + attr + "]");
+      if (!card) return;
+      var found = null;
+      var leaves = card.querySelectorAll("span, div");
+      for (var k = 0; k < leaves.length; k++) {
+        if (leaves[k].children.length) continue;
+        var txt = (leaves[k].textContent || "").trim();
+        if (txt && names[txt]) { found = txt; break; }
+      }
+      if (found) {
+        if (card.getAttribute("data-sbx") !== found) {
+          card.setAttribute("data-sbx", found);
+          card.style.cursor = "pointer";
+        }
+      } else if (card.hasAttribute("data-sbx")) {
+        card.removeAttribute("data-sbx"); // slot went back to "Open"
+        card.style.cursor = "";
+      }
+    });
+  }
+
+  document.addEventListener("click", function (e) {
+    var t = e.target;
+    if (!t || !t.closest) return;
+    if (overlay && overlay.contains(t)) return; // clicks inside the panel
+    var hit = t.closest("[data-sbx]");
+    if (!hit) return;
+    e.preventDefault();
+    openPanel(hit.getAttribute("data-sbx"));
+  });
+
+  // ---- fetch + poll -------------------------------------------------------
   function boardReady() {
     return !!(window.SprintBoard && typeof window.SprintBoard.apply === "function");
   }
@@ -438,7 +756,9 @@ document.addEventListener('DOMContentLoaded', async function() {
         if (data.warnings && data.warnings.length) {
           console.warn("[sprint] " + data.warnings.length + " warning(s) from " + ENDPOINT + ":", data.warnings);
         }
+        rows = data.tasks;
         window.SprintBoard.apply(data.tasks, data.fetchedAt || Date.now());
+        setTimeout(function () { ensurePanel(); bindNames(); }, 60);
       })
       .catch(function (err) {
         // Leave the last good standings on screen and try again on the next tick.
@@ -447,6 +767,20 @@ document.addEventListener('DOMContentLoaded', async function() {
   }
 
   function start() {
+    buildPanel();
+
+    // the board re-renders on apply and on its own 30s clock, which wipes our
+    // attributes — re-bind whenever it puts nodes back
+    var pending = 0;
+    new MutationObserver(function () {
+      if (pending) return;
+      pending = requestAnimationFrame(function () {
+        pending = 0;
+        ensurePanel();
+        bindNames();
+      });
+    }).observe(document.body, { childList: true, subtree: true });
+
     setTimeout(function () {
       whenBoardReady(function () {
         refresh();
