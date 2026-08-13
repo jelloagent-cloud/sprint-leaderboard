@@ -119,7 +119,21 @@ async function fetchAllTasks(token) {
   return tasks;
 }
 
-// Minutes each task has spent in the "needs edits" status, keyed by task id.
+// ClickUp has shipped two shapes for this: total_time as an object with
+// by_minute, and a flat total_time_minutes. Returns null when neither parses —
+// callers must treat null as "unknown", never as zero.
+function statusMinutes(entry) {
+  if (!entry) return null;
+  const tt = entry.total_time;
+  if (tt && typeof tt === "object" && tt.by_minute !== undefined) {
+    const n = Number(tt.by_minute);
+    return Number.isFinite(n) ? n : null;
+  }
+  const m = Number(entry.total_time_minutes);
+  return Number.isFinite(m) ? m : null;
+}
+
+// How long each task sat in the "needs edits" status, keyed by task id.
 // Only called for the handful of in-window tasks that carry a stamp.
 async function fetchNeedsEditsMinutes(token, ids) {
   const out = new Map();
@@ -141,22 +155,35 @@ async function fetchNeedsEditsMinutes(token, ids) {
 
     for (const id of Object.keys(byId)) {
       const entry = byId[id] || {};
-      const history = entry.status_history || [];
+      const history = Array.isArray(entry.status_history) ? entry.status_history : [];
+      const cur = entry.current_status;
+
       let minutes = 0;
       let seen = false;
+      let unparsed = false;
       for (const h of history) {
-        if (isNeedsEdits(h.status)) {
-          minutes += Number(h.total_time_minutes) || 0;
-          seen = true;
-        }
+        if (!isNeedsEdits(h.status)) continue;
+        seen = true;
+        const m = statusMinutes(h);
+        if (m === null) unparsed = true;
+        else minutes += m;
       }
       // history normally already includes the current status; only add it
       // separately when it does not, so the time is never counted twice.
-      const cur = entry.current_status;
       if (!seen && cur && isNeedsEdits(cur.status)) {
-        minutes += Number(cur.total_time_minutes) || 0;
+        seen = true;
+        const m = statusMinutes(cur);
+        if (m === null) unparsed = true;
+        else minutes += m;
       }
-      out.set(id, minutes);
+
+      out.set(id, {
+        minutes,
+        unparsed,
+        // Did we understand this task's payload at all? If the shape changes
+        // again we must not read "no needs-edits time" out of a blank object.
+        understood: history.length > 0 || !!cur,
+      });
     }
   }
   return out;
@@ -249,13 +276,17 @@ export default async function handler(req, res) {
           stamped.map((m) => m.id)
         );
         for (const m of stamped) {
-          const mins = minutes.get(m.id);
-          if (mins === undefined) continue; // no record → leave the stamp alone
-          if (mins >= MISCLICK_MAX_MINUTES) continue; // real round(s)
+          const info = minutes.get(m.id);
+          // Only ever drop a round on a positive reading. Anything unknown —
+          // task missing from the response, payload we could not parse — leaves
+          // the stamp alone, because wrongly clearing a real round hands an
+          // editor points they did not earn.
+          if (!info || !info.understood || info.unparsed) continue;
+          if (info.minutes >= MISCLICK_MAX_MINUTES) continue; // real round(s)
           // Every stamp on this task is unbacked by status time.
           warnings.push(
-            `${m.row.batch}: ${m.rounds} Needs Edits stamp(s) but no recorded ` +
-              `time in "${NEEDS_EDITS_STATUS}" — treated as accidental, not counted`
+            `${m.row.batch}: ${m.rounds} Needs Edits stamp(s) but ${info.minutes}m ` +
+              `recorded in "${NEEDS_EDITS_STATUS}" — treated as accidental, not counted`
           );
           m.rounds = 0;
           m.csFault = 0;
