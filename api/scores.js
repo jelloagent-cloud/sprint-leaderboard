@@ -104,17 +104,53 @@ function faultsFor(rounds, csFault) {
   ];
 }
 
+// Don't drag the whole list over the wire. A batch that reaches Ready-to-Launch
+// inside the sprint is necessarily touched at that moment, so anything left
+// untouched through the 30 days before the window opened cannot qualify. The
+// buffer is deliberately generous so a manual date override that pulls an older
+// batch into the sprint still finds its task.
+const UPDATED_SINCE = WINDOW_START - 30 * 24 * 60 * 60 * 1000;
+
+const MAX_PAGES = 40;
+const PAGE_CONCURRENCY = 8;
+
+function taskPageUrl(page) {
+  return (
+    `https://api.clickup.com/api/v2/list/${LIST_ID}/task` +
+    `?include_closed=true&subtasks=false` +
+    `&date_updated_gt=${UPDATED_SINCE}&page=${page}`
+  );
+}
+
+async function fetchTaskPage(token, page) {
+  const res = await fetch(taskPageUrl(page), { headers: { Authorization: token } });
+  if (!res.ok) throw new Error(`ClickUp ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
 async function fetchAllTasks(token) {
-  const tasks = [];
-  for (let page = 0; page < 40; page++) {
-    const url =
-      `https://api.clickup.com/api/v2/list/${LIST_ID}/task` +
-      `?include_closed=true&subtasks=false&page=${page}`;
-    const res = await fetch(url, { headers: { Authorization: token } });
-    if (!res.ok) throw new Error(`ClickUp ${res.status}: ${await res.text()}`);
-    const data = await res.json();
-    tasks.push(...(data.tasks || []));
-    if (data.last_page || !data.tasks || data.tasks.length === 0) break;
+  const first = await fetchTaskPage(token, 0);
+  const tasks = [...(first.tasks || [])];
+  if (first.last_page || !first.tasks || first.tasks.length === 0) return tasks;
+
+  // ClickUp does not tell us the page count up front, so pull the remainder in
+  // parallel windows and stop at the first page that reports the end. Pages
+  // requested past the end just come back empty, which costs one round trip
+  // instead of a serial walk.
+  for (let page = 1; page < MAX_PAGES; ) {
+    const batch = [];
+    for (let i = 0; i < PAGE_CONCURRENCY && page + i < MAX_PAGES; i++) {
+      batch.push(fetchTaskPage(token, page + i));
+    }
+    const pages = await Promise.all(batch);
+    let done = false;
+    for (const p of pages) {
+      const list = p.tasks || [];
+      tasks.push(...list);
+      if (p.last_page || list.length === 0) done = true;
+    }
+    page += batch.length;
+    if (done) break;
   }
   return tasks;
 }
@@ -306,7 +342,7 @@ export default async function handler(req, res) {
 
     const tasks = mapped.map((m) => m.row);
 
-    res.setHeader("Cache-Control", "s-maxage=60, stale-while-revalidate=300");
+    res.setHeader("Cache-Control", "s-maxage=120, stale-while-revalidate=300");
     return res.status(200).json({
       fetchedAt: Date.now(),
       tasks,
