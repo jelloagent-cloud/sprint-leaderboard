@@ -882,9 +882,13 @@ document.addEventListener('DOMContentLoaded', async function() {
     // old body dies with it, so poll instead: cheap, and immune to the board
     // replacing any node we attached to.
     setInterval(function () {
+      if (document.hidden) return; // most of the audience is on a phone
       ensureChrome();
       bindNames();
     }, 400);
+    document.addEventListener("visibilitychange", function () {
+      if (!document.hidden) { ensureChrome(); bindNames(); }
+    });
   }
 
 
