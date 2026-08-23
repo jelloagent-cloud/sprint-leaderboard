@@ -59,6 +59,41 @@ const NAME_MAP = {
 // Editors excluded from the sprint (exact ClickUp usernames)
 const EXCLUDE = ["MJ NEW"];
 
+// --- Manual adjustments — edit these two blocks by hand ---------------------
+// Keys must match the ClickUp batch name exactly. /api/scores reports
+// `overridesApplied` and warns about keys that matched nothing.
+//
+//   "Batch#755": { date: "2026-08-03" }   score it for a different date
+//   "Batch#747": { count: 2 }             counts as two batches
+//   "Batch#717": { clean: true }          force clean / force not-clean
+//   "Batch#801": { exclude: true }        drop from the sprint
+//   "Batch#802": { editor: "Edi" }        reassign (also overrides EXCLUDE)
+//   "Batch#803": { format: "Voiceover" }  force a tier
+const OVERRIDES = {
+  // Two videos shipped under one batch ticket, both clean. `clean` keeps it
+  // that way if a Needs Edits stamp lands on the ticket later.
+  "Batch#866": { count: 2, clean: true },
+};
+
+// Batches credited to an editor by hand, with no ClickUp task behind them.
+// Each one counts as a clean batch at the tier named in `format`, so it is
+// worth exactly what the real batch would have been worth. `date` must fall
+// inside the sprint window. These are additive: they never take a batch away
+// from whoever ClickUp says did the work.
+const MANUAL_CREDITS = [
+  {
+    batch: "Batch#793",
+    editor: "Aakriti Choudhary",
+    format: "AI-UGC", // Standard, x1.2 — the batch's own heaviest label
+    date: "2026-08-22",
+    url: "https://app.clickup.com/t/86cawyxat",
+    // Assigned to Aakriti by mistake and reassigned to Nils, who is editing it
+    // now and keeps his own credit when it launches. Ben promised her the
+    // batch anyway, so it is granted here rather than waiting on that launch.
+    note: "mis-assignment, credit promised by Ben",
+  },
+];
+
 // Sprint window — CEST (UTC+2) in August
 const WINDOW_START = 1786312800000; // Mon Aug 10 2026 00:00 CEST
 const WINDOW_END   = 1788213600000; // Tue Sep  1 2026 00:00 CEST
@@ -94,6 +129,16 @@ function toMillis(v) {
 
 function neFor(rounds) {
   return rounds >= 4 ? "3+" : String(rounds);
+}
+
+// Hand-written dates are plain days in sprint-local time (CEST).
+function parseLocalDate(value, label, warnings) {
+  const ms = Date.parse(String(value) + "T00:00:00+02:00");
+  if (!Number.isFinite(ms)) {
+    warnings.push(`${label}: could not read the date "${value}" — ignored`);
+    return null;
+  }
+  return ms;
 }
 
 // Board expects one entry per round, CS-fault rounds first.
@@ -225,19 +270,35 @@ async function fetchNeedsEditsMinutes(token, ids) {
   return out;
 }
 
-function mapTask(task, warnings) {
-  const rtl = toMillis(fieldValue(task, F.readyToLaunch));
+function mapTask(task, warnings, usedOverrides) {
+  const ov = OVERRIDES[task.name] || null;
+  if (ov) usedOverrides.add(task.name);
+  if (ov && ov.exclude) return null;
+
+  // The date override runs before the window test — moving a batch into or out
+  // of the sprint is the whole point of it.
+  let rtl = toMillis(fieldValue(task, F.readyToLaunch));
+  if (ov && ov.date) {
+    const moved = parseLocalDate(ov.date, task.name, warnings);
+    if (moved !== null) rtl = moved;
+  }
   if (rtl === null || rtl < WINDOW_START || rtl >= WINDOW_END) return null;
 
   const editorVal = fieldValue(task, F.editor);
   const editor = Array.isArray(editorVal) && editorVal.length ? editorVal[0] : null;
-  if (!editor) {
+  const rawName = editor ? editor.username || editor.email || String(editor.id) : null;
+
+  let editorName;
+  if (ov && ov.editor) {
+    editorName = ov.editor; // a deliberate reassignment beats EXCLUDE
+  } else if (!rawName) {
     warnings.push(`${task.name}: no Editor set — excluded`);
     return null;
+  } else if (EXCLUDE.includes(rawName)) {
+    return null;
+  } else {
+    editorName = NAME_MAP[rawName] || rawName;
   }
-  const rawName = editor.username || editor.email || String(editor.id);
-  const editorName = NAME_MAP[rawName] || rawName;
-  if (EXCLUDE.includes(rawName)) return null;
 
   // revision rounds = how many "Date Needs Edits" fields are filled
   const rounds = F.needEdits.reduce(
@@ -273,10 +334,13 @@ function mapTask(task, warnings) {
     if (cid === CONCEPT_VSL_ID) format = "Voiceover"; // heaviest tier
   }
 
+  if (ov && ov.format) format = ov.format;
+
   if (!format) warnings.push(`${task.name}: no Format label — scored untiered`);
 
   return {
     id: task.id,
+    ov,
     rounds,
     csFault,
     row: {
@@ -299,8 +363,9 @@ export default async function handler(req, res) {
 
   try {
     const warnings = [];
+    const usedOverrides = new Set();
     const raw = await fetchAllTasks(token);
-    const mapped = raw.map((t) => mapTask(t, warnings)).filter(Boolean);
+    const mapped = raw.map((t) => mapTask(t, warnings, usedOverrides)).filter(Boolean);
 
     // Cross-check stamped rounds against recorded time in "needs edits".
     let misclicksDropped = 0;
@@ -340,7 +405,61 @@ export default async function handler(req, res) {
       }
     }
 
-    const tasks = mapped.map((m) => m.row);
+    // Forced clean/not-clean runs after the misclick pass so a hand-set verdict
+    // is never quietly undone by it.
+    const tasks = [];
+    for (const m of mapped) {
+      const ov = m.ov;
+      if (ov && typeof ov.clean === "boolean") {
+        if (ov.clean) {
+          m.row.faults = Array(m.rounds).fill("Brief");
+        } else {
+          if (m.rounds === 0) {
+            m.rounds = 1;
+            m.row.ne = neFor(1);
+          }
+          m.row.faults = Array(m.rounds).fill("Editor");
+        }
+      }
+
+      let copies = 1;
+      if (ov && ov.count !== undefined) {
+        const n = Math.floor(Number(ov.count));
+        if (Number.isFinite(n) && n >= 1) copies = n;
+        else warnings.push(`${m.row.batch}: count "${ov.count}" is not a whole number ≥ 1 — ignored`);
+      }
+      for (let i = 0; i < copies; i++) tasks.push(i === 0 ? m.row : { ...m.row });
+    }
+
+    for (const key of Object.keys(OVERRIDES)) {
+      if (!usedOverrides.has(key)) {
+        warnings.push(`OVERRIDES["${key}"] matched no batch in ClickUp — check the name`);
+      }
+    }
+
+    // Hand-granted batches, added on top of whatever ClickUp reported.
+    const creditsApplied = [];
+    for (const c of MANUAL_CREDITS) {
+      const rtl = parseLocalDate(c.date, `manual credit ${c.batch}`, warnings);
+      if (rtl === null) continue;
+      if (rtl < WINDOW_START || rtl >= WINDOW_END) {
+        warnings.push(
+          `manual credit ${c.batch} (${c.editor}): ${c.date} is outside the sprint window — not counted`
+        );
+        continue;
+      }
+      tasks.push({
+        batch: c.batch,
+        editor: c.editor,
+        format: c.format || "",
+        ne: "0",
+        faults: [],
+        rtl,
+        rfe: null, // no real edit time — keep it out of the speed tiebreak
+        url: c.url || null,
+      });
+      creditsApplied.push(`${c.batch} → ${c.editor}${c.note ? ` (${c.note})` : ""}`);
+    }
 
     res.setHeader("Cache-Control", "s-maxage=120, stale-while-revalidate=300");
     return res.status(200).json({
@@ -349,6 +468,8 @@ export default async function handler(req, res) {
       taskCount: tasks.length,
       scannedCount: raw.length,
       misclicksDropped,
+      overridesApplied: [...usedOverrides],
+      manualCredits: creditsApplied,
       warnings,
     });
   } catch (err) {
