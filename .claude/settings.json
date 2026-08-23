@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s https://sprint-leaderboard.vercel.app/*)",
+      "Bash(curl -sI https://sprint-leaderboard.vercel.app/*)",
+      "Bash(curl -s http://localhost:8765/*)",
+      "Bash(node test-scores.mjs)",
+      "Bash(node test-overrides.mjs)",
+      "mcp__Claude_Browser__navigate",
+      "mcp__Claude_Browser__read_page",
+      "mcp__Claude_Browser__read_console_messages",
+      "mcp__Claude_Browser__get_page_text",
+      "mcp__Claude_Browser__resize_window",
+      "mcp__Claude_Browser__tabs_context",
+      "mcp__Claude_Browser__find",
+      "mcp__49034fbd-0f08-4310-a8e7-7ff09ddb0837__clickup_search",
+      "mcp__49034fbd-0f08-4310-a8e7-7ff09ddb0837__clickup_get_task",
+      "mcp__49034fbd-0f08-4310-a8e7-7ff09ddb0837__clickup_filter_tasks",
+      "mcp__49034fbd-0f08-4310-a8e7-7ff09ddb0837__clickup_get_custom_fields",
+      "mcp__49034fbd-0f08-4310-a8e7-7ff09ddb0837__clickup_get_task_time_in_status",
+      "mcp__49034fbd-0f08-4310-a8e7-7ff09ddb0837__clickup_get_bulk_tasks_time_in_status"
+    ]
+  }
+}

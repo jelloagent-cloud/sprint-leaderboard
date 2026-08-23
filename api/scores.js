@@ -65,14 +65,22 @@ const EXCLUDE = ["MJ NEW"];
 //
 //   "Batch#755": { date: "2026-08-03" }   score it for a different date
 //   "Batch#747": { count: 2 }             counts as two batches
+//   "Batch#804": { rounds: 0 }            wipe the revision rounds
 //   "Batch#717": { clean: true }          force clean / force not-clean
 //   "Batch#801": { exclude: true }        drop from the sprint
 //   "Batch#802": { editor: "Edi" }        reassign (also overrides EXCLUDE)
 //   "Batch#803": { format: "Voiceover" }  force a tier
+//
+// `rounds: 0` and `clean: true` both make a batch score as clean. The
+// difference is what the drill-down shows: `rounds: 0` says the revisions
+// never happened, `clean: true` keeps them but blames the brief, not the editor.
 const OVERRIDES = {
   // Two videos shipped under one batch ticket, both clean. `clean` keeps it
   // that way if a Needs Edits stamp lands on the ticket later.
   "Batch#866": { count: 2, clean: true },
+
+  // Revision round waived by Ben — scored as if it never happened.
+  "Batch#825": { rounds: 0 },
 };
 
 // Batches credited to an editor by hand, with no ClickUp task behind them.
@@ -410,6 +418,19 @@ export default async function handler(req, res) {
     const tasks = [];
     for (const m of mapped) {
       const ov = m.ov;
+
+      if (ov && ov.rounds !== undefined) {
+        const n = Math.floor(Number(ov.rounds));
+        if (Number.isFinite(n) && n >= 0) {
+          m.rounds = n;
+          m.csFault = Math.min(m.csFault, n);
+          m.row.ne = neFor(n);
+          m.row.faults = faultsFor(n, m.csFault);
+        } else {
+          warnings.push(`${m.row.batch}: rounds "${ov.rounds}" is not a whole number ≥ 0 — ignored`);
+        }
+      }
+
       if (ov && typeof ov.clean === "boolean") {
         if (ov.clean) {
           m.row.faults = Array(m.rounds).fill("Brief");
