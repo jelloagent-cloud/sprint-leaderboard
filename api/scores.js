@@ -81,6 +81,12 @@ const OVERRIDES = {
 
   // Revision round waived by Ben — scored as if it never happened.
   "Batch#825": { rounds: 0 },
+
+  // One revision round, confirmed with the creative strategist. The automation
+  // wrote the same date into Needs Edits 1 AND 2 (and pushed Need Edits Counter
+  // to 2), so both ClickUp and this API read it as two. See the duplicate-stamp
+  // warning in /api/scores.
+  "OSP-18": { rounds: 1 },
 };
 
 // Batches credited to an editor by hand, with no ClickUp task behind them.
@@ -278,7 +284,7 @@ async function fetchNeedsEditsMinutes(token, ids) {
   return out;
 }
 
-function mapTask(task, warnings, usedOverrides) {
+function mapTask(task, warnings, usedOverrides, duplicateStamps) {
   const ov = OVERRIDES[task.name] || null;
   if (ov) usedOverrides.add(task.name);
   if (ov && ov.exclude) return null;
@@ -309,10 +315,29 @@ function mapTask(task, warnings, usedOverrides) {
   }
 
   // revision rounds = how many "Date Needs Edits" fields are filled
-  const rounds = F.needEdits.reduce(
-    (n, id) => n + (toMillis(fieldValue(task, id)) !== null ? 1 : 0),
-    0
-  );
+  const stamps = F.needEdits
+    .map((id) => toMillis(fieldValue(task, id)))
+    .filter((v) => v !== null);
+  const rounds = stamps.length;
+
+  // A duplicated automation run writes the SAME date into two of the four
+  // fields, so one round reads as two. The fields are day-granular, so two
+  // genuine rounds on one day look identical too — hence a flag for a human
+  // rather than an automatic correction.
+  const distinctStamps = new Set(stamps).size;
+  if (distinctStamps < rounds) {
+    warnings.push(
+      `${task.name}: ${rounds} Needs Edits stamps but only ${distinctStamps} distinct ` +
+        `date(s) — one round may have been stamped twice; still counted as ${rounds}. ` +
+        `Confirm the real number and set OVERRIDES["${task.name}"] = { rounds: N }`
+    );
+    duplicateStamps.push({
+      batch: task.name,
+      stamps: rounds,
+      distinctDates: distinctStamps,
+      overridden: !!(ov && ov.rounds !== undefined),
+    });
+  }
 
   const csRaw = fieldValue(task, F.csFault);
   let csFault =
@@ -372,8 +397,9 @@ export default async function handler(req, res) {
   try {
     const warnings = [];
     const usedOverrides = new Set();
+    const duplicateStamps = [];
     const raw = await fetchAllTasks(token);
-    const mapped = raw.map((t) => mapTask(t, warnings, usedOverrides)).filter(Boolean);
+    const mapped = raw.map((t) => mapTask(t, warnings, usedOverrides, duplicateStamps)).filter(Boolean);
 
     // Cross-check stamped rounds against recorded time in "needs edits".
     let misclicksDropped = 0;
@@ -490,6 +516,7 @@ export default async function handler(req, res) {
       scannedCount: raw.length,
       misclicksDropped,
       overridesApplied: [...usedOverrides],
+      duplicateStamps,
       manualCredits: creditsApplied,
       warnings,
     });
