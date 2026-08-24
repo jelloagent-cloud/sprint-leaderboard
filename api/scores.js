@@ -56,8 +56,11 @@ const NAME_MAP = {
   "Joshua cecil": "joshua Cecil", // ClickUp says "Joshua cecil"; roster says "joshua Cecil"
 };
 
-// Editors excluded from the sprint (exact ClickUp usernames)
-const EXCLUDE = ["MJ NEW"];
+// Editors excluded from the sprint (exact ClickUp usernames).
+// Team leads are permanently out — they are never competing.
+// NOTE: keep this in step with DROP_FROM_ROSTER at the end of index.html, which
+// removes the same people from the board's own roster list.
+const EXCLUDE = ["MJ NEW", "Ben Schlueter", "Andrei Oboukhov"];
 
 // --- Manual adjustments — edit these two blocks by hand ---------------------
 // Keys must match the ClickUp batch name exactly. /api/scores reports
