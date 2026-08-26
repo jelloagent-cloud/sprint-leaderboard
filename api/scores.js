@@ -90,6 +90,13 @@ const OVERRIDES = {
   // to 2), so both ClickUp and this API read it as two. See the duplicate-stamp
   // warning in /api/scores.
   "OSP-18": { rounds: 1 },
+
+  // Two Voiceover videos under one ticket, both clean. `editor` is a no-op —
+  // ClickUp already has Aakif on it — and `date` only moves it within the
+  // window (Aug 11), which changes nothing while there is no ticket gate.
+  "Batch#613": { editor: "Aakif", clean: true, format: "Voiceover", count: 2, date: "2026-08-11" },
+
+  "Batch#768": { clean: true },
 };
 
 // Batches credited to an editor by hand, with no ClickUp task behind them.
