@@ -113,6 +113,11 @@ const OVERRIDES = {
   // ClickUp label (Voiceover-UGC) is already Heavy, so the tier is left alone
   // and this scores a single clean Heavy point, not two.
   "Batch#783": { count: 2, cleanCount: 1 },
+
+  // Revision round waived by Ben. NOTE: this ticket has no Format label in
+  // ClickUp, so it scores untiered at 1.0 — set the label (or add a `format`
+  // key here) if it should count as Standard or Heavy.
+  "Batch#836": { rounds: 0 },
 };
 
 // Batches credited to an editor by hand, with no ClickUp task behind them.
