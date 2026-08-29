@@ -315,7 +315,7 @@ async function fetchNeedsEditsMinutes(token, ids) {
   return out;
 }
 
-function mapTask(task, warnings, usedOverrides, duplicateStamps, unmappedFormats) {
+function mapTask(task, warnings, usedOverrides, duplicateStamps, unmappedFormats, editorAudit) {
   const ov = OVERRIDES[task.name] || null;
   if (ov) usedOverrides.add(task.name);
   if (ov && ov.exclude) return null;
@@ -330,8 +330,20 @@ function mapTask(task, warnings, usedOverrides, duplicateStamps, unmappedFormats
   if (rtl === null || rtl < WINDOW_START || rtl >= WINDOW_END) return null;
 
   const editorVal = fieldValue(task, F.editor);
-  const editor = Array.isArray(editorVal) && editorVal.length ? editorVal[0] : null;
+  const editorList = Array.isArray(editorVal) ? editorVal.filter(Boolean) : [];
+  const editor = editorList.length ? editorList[0] : null;
   const rawName = editor ? editor.username || editor.email || String(editor.id) : null;
+
+  // The Editor field allows several people. We score the first one, which means
+  // a batch with two editors set silently credits one and drops the other —
+  // worth surfacing rather than quietly picking.
+  if (editorList.length > 1) {
+    const all = editorList.map((u) => u.username || u.email || String(u.id));
+    warnings.push(
+      `${task.name}: ${all.length} editors set (${all.join(", ")}) — credited to ${all[0]} only`
+    );
+    editorAudit.push({ batch: task.name, credited: all[0], alsoSet: all.slice(1) });
+  }
 
   let editorName;
   if (ov && ov.editor) {
@@ -446,8 +458,9 @@ export default async function handler(req, res) {
     const usedOverrides = new Set();
     const duplicateStamps = [];
     const unmappedFormats = [];
+    const editorAudit = [];
     const raw = await fetchAllTasks(token);
-    const mapped = raw.map((t) => mapTask(t, warnings, usedOverrides, duplicateStamps, unmappedFormats)).filter(Boolean);
+    const mapped = raw.map((t) => mapTask(t, warnings, usedOverrides, duplicateStamps, unmappedFormats, editorAudit)).filter(Boolean);
 
     // Cross-check stamped rounds against recorded time in "needs edits".
     let misclicksDropped = 0;
@@ -595,6 +608,7 @@ export default async function handler(req, res) {
       overridesApplied: [...usedOverrides],
       duplicateStamps,
       unmappedFormats,
+      editorAudit,
       manualCredits: creditsApplied,
       warnings,
     });
