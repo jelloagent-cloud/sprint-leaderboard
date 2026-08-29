@@ -97,6 +97,16 @@ const OVERRIDES = {
   "Batch#613": { editor: "Aakif", clean: true, format: "Voiceover", count: 2, date: "2026-08-11" },
 
   "Batch#768": { clean: true },
+
+  // Two videos under one ticket for Nils, both clean. Note this is additive to
+  // the manual credit below: the same batch name also counts once for Aakriti,
+  // so Batch#793 appears three times on the board in total.
+  "Batch#793": { clean: true, count: 2, date: "2026-08-11" },
+
+  // Clean, and relabelled Animation. ClickUp has it as Voiceover-UGC, so this
+  // moves it Heavy -> Light: it scores 1.0 rather than the 1.5 its current
+  // label would give.
+  "Batch#783": { clean: true, format: "Animation" },
 };
 
 // Batches credited to an editor by hand, with no ClickUp task behind them.
