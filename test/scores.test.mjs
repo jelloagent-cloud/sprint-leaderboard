@@ -311,6 +311,39 @@ r = await run({ tasks: CORE, overrides: '{ "Batch#999": { clean: true } }' });
 check("a key matching nothing warns instead of failing silently",
   r.payload.warnings.some((w) => w.includes('OVERRIDES["Batch#999"] matched no batch')), true);
 
+section("cleanCount — one ticket, several videos, mixed outcomes");
+// Batch#755 carries one real editor round, so an untouched copy is not clean.
+r = await run({ tasks: CORE, overrides: '{ "Batch#755": { count: 2, cleanCount: 1 } }' });
+let mixed = find(r.payload, "Batch#755");
+check("both videos are delivered", mixed.length, 2);
+check("exactly one of them is clean",
+  mixed.filter((t) => t.ne === "0" && t.faults.length === 0).length, 1);
+check("the other keeps the rounds ClickUp recorded",
+  mixed.filter((t) => t.faults.includes("Editor")).length, 1);
+check("tier is untouched — still the batch's own format",
+  [...new Set(mixed.map((t) => t.format))], ["Voiceover-UGC"]);
+
+r = await run({ tasks: CORE, overrides: '{ "Batch#755": { count: 2, cleanCount: 2 } }' });
+check("cleanCount can cover every copy",
+  find(r.payload, "Batch#755").every((t) => t.ne === "0"), true);
+
+r = await run({ tasks: CORE, overrides: '{ "Batch#755": { count: 2, cleanCount: 5 } }' });
+check("more clean than copies is capped, not invented",
+  find(r.payload, "Batch#755").length, 2);
+check("and warns", r.payload.warnings.some((w) => w.includes("more than the 2 copies")), true);
+
+r = await run({ tasks: CORE, overrides: '{ "Batch#755": { count: 2, cleanCount: -1 } }' });
+check("negative cleanCount refused, rounds left alone",
+  find(r.payload, "Batch#755").every((t) => t.faults.includes("Editor")), true);
+
+r = await run({ tasks: CORE, overrides: '{ "Batch#755": { cleanCount: 1 } }' });
+check("cleanCount without count cleans the single row",
+  [find(r.payload, "Batch#755")[0].ne, find(r.payload, "Batch#755")[0].faults], ["0", []]);
+
+r = await run({ tasks: CORE, overrides: '{ "Batch#901": { count: 2, cleanCount: 1 } }' });
+check("an already-clean batch is unaffected by the split",
+  find(r.payload, "Batch#901").every((t) => t.ne === "0"), true);
+
 section("all five keys at once (the Batch#613 shape)");
 r = await run({ tasks: CORE, overrides:
   '{ "Batch#755": { editor: "Aakif", clean: true, format: "Voiceover", count: 2, date: "2026-08-11" } }' });

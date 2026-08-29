@@ -68,6 +68,7 @@ const EXCLUDE = ["MJ NEW", "Ben Schlueter", "Andrei Oboukhov"];
 //
 //   "Batch#755": { date: "2026-08-03" }   score it for a different date
 //   "Batch#747": { count: 2 }             counts as two batches
+//   "Batch#748": { count: 2, cleanCount: 1 }  two videos, only one of them clean
 //   "Batch#804": { rounds: 0 }            wipe the revision rounds
 //   "Batch#717": { clean: true }          force clean / force not-clean
 //   "Batch#801": { exclude: true }        drop from the sprint
@@ -77,6 +78,11 @@ const EXCLUDE = ["MJ NEW", "Ben Schlueter", "Andrei Oboukhov"];
 // `rounds: 0` and `clean: true` both make a batch score as clean. The
 // difference is what the drill-down shows: `rounds: 0` says the revisions
 // never happened, `clean: true` keeps them but blames the brief, not the editor.
+//
+// `count` alone duplicates a row exactly, so every copy is clean or none is.
+// When one ticket holds several videos and only some came back clean, use
+// `cleanCount`: that many copies are scored clean with no revisions, and the
+// rest keep the rounds ClickUp recorded. It wins over `clean` if both are set.
 const OVERRIDES = {
   // Two videos shipped under one batch ticket, both clean. `clean` keeps it
   // that way if a Needs Edits stamp lands on the ticket later.
@@ -103,10 +109,10 @@ const OVERRIDES = {
   // so Batch#793 appears three times on the board in total.
   "Batch#793": { clean: true, count: 2, date: "2026-08-11" },
 
-  // Clean, and relabelled Animation. ClickUp has it as Voiceover-UGC, so this
-  // moves it Heavy -> Light: it scores 1.0 rather than the 1.5 its current
-  // label would give.
-  "Batch#783": { clean: true, format: "Animation" },
+  // Two Heavy videos under one ticket, of which one came back clean. Its
+  // ClickUp label (Voiceover-UGC) is already Heavy, so the tier is left alone
+  // and this scores a single clean Heavy point, not two.
+  "Batch#783": { count: 2, cleanCount: 1 },
 };
 
 // Batches credited to an editor by hand, with no ClickUp task behind them.
@@ -495,7 +501,36 @@ export default async function handler(req, res) {
         if (Number.isFinite(n) && n >= 1) copies = n;
         else warnings.push(`${m.row.batch}: count "${ov.count}" is not a whole number ≥ 1 — ignored`);
       }
-      for (let i = 0; i < copies; i++) tasks.push(i === 0 ? m.row : { ...m.row });
+
+      // How many of those copies were actually clean. The rest keep the rounds
+      // ClickUp recorded, so one ticket can hold a clean video and a messy one.
+      let cleanCopies = 0;
+      if (ov && ov.cleanCount !== undefined) {
+        const k = Math.floor(Number(ov.cleanCount));
+        if (!Number.isFinite(k) || k < 0) {
+          warnings.push(`${m.row.batch}: cleanCount "${ov.cleanCount}" is not a whole number ≥ 0 — ignored`);
+        } else {
+          cleanCopies = Math.min(k, copies);
+          if (k > copies) {
+            warnings.push(
+              `${m.row.batch}: cleanCount ${k} is more than the ${copies} cop${copies === 1 ? "y" : "ies"} — capped`
+            );
+          }
+        }
+      }
+
+      // Snapshot before the loop: cleaning the first copy mutates m.row, and
+      // cloning from it after that would hand every later copy the cleaned
+      // version instead of the batch's real rounds.
+      const pristine = { ...m.row, faults: m.row.faults.slice() };
+      for (let i = 0; i < copies; i++) {
+        const row = i === 0 ? m.row : { ...pristine, faults: pristine.faults.slice() };
+        if (i < cleanCopies) {
+          row.ne = neFor(0);
+          row.faults = [];
+        }
+        tasks.push(row);
+      }
     }
 
     for (const key of Object.keys(OVERRIDES)) {
