@@ -114,10 +114,12 @@ const OVERRIDES = {
   // and this scores a single clean Heavy point, not two.
   "Batch#783": { count: 2, cleanCount: 1 },
 
-  // Revision round waived by Ben. NOTE: this ticket has no Format label in
-  // ClickUp, so it scores untiered at 1.0 — set the label (or add a `format`
-  // key here) if it should count as Standard or Heavy.
-  "Batch#836": { rounds: 0 },
+  // Revision round waived by Ben, and pinned to the Standard tier. It had no
+  // Format label when the waiver went in, which scores untiered at 1.0; the
+  // label has since been set to AI-UGC in ClickUp, and pinning it here means
+  // clearing or changing that label can no longer quietly drop it back to 1.0
+  // before the sprint closes.
+  "Batch#836": { rounds: 0, format: "AI-UGC" },
 };
 
 // Batches credited to an editor by hand, with no ClickUp task behind them.
