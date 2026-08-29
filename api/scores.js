@@ -83,6 +83,23 @@ const EXCLUDE = ["MJ NEW", "Ben Schlueter", "Andrei Oboukhov"];
 // When one ticket holds several videos and only some came back clean, use
 // `cleanCount`: that many copies are scored clean with no revisions, and the
 // rest keep the rounds ClickUp recorded. It wins over `clean` if both are set.
+//
+// PREFER FIXING CLICKUP OVER ADDING AN OVERRIDE HERE.
+// An override lives in this file, so it only ever affects this board — the
+// weekly Editor Leaderboard reads ClickUp on its own and will never see it,
+// which is how the two boards drift apart. Most of these keys have a ClickUp
+// field that says the same thing, and a fix made there shows up on both:
+//
+//   clean / rounds   ->  CS Fault Revisions  (rounds that were not the
+//                        editor's fault; set it equal to the round count and
+//                        the batch is clean everywhere)
+//   format           ->  the Format label
+//   editor           ->  the Editor field
+//   date             ->  Entered — Ready to Launch
+//   exclude          ->  clear Entered — Ready to Launch
+//
+// Only `count` and `cleanCount` have no ClickUp equivalent: one ticket is one
+// task, so a ticket holding several videos genuinely needs an override here.
 const OVERRIDES = {
   // Two videos shipped under one batch ticket, both clean. `clean` keeps it
   // that way if a Needs Edits stamp lands on the ticket later.
@@ -120,6 +137,11 @@ const OVERRIDES = {
   // clearing or changing that label can no longer quietly drop it back to 1.0
   // before the sprint closes.
   "Batch#836": { rounds: 0, format: "AI-UGC" },
+
+  // Aakif's, two rounds recorded, both waived as not his fault.
+  // Equivalent in ClickUp: set CS Fault Revisions = 2 on the task, which the
+  // weekly leaderboard would pick up too. See the note above the block.
+  "Batch#865": { clean: true },
 };
 
 // Batches credited to an editor by hand, with no ClickUp task behind them.
