@@ -315,7 +315,7 @@ async function fetchNeedsEditsMinutes(token, ids) {
   return out;
 }
 
-function mapTask(task, warnings, usedOverrides, duplicateStamps) {
+function mapTask(task, warnings, usedOverrides, duplicateStamps, unmappedFormats) {
   const ov = OVERRIDES[task.name] || null;
   if (ov) usedOverrides.add(task.name);
   if (ov && ov.exclude) return null;
@@ -382,13 +382,17 @@ function mapTask(task, warnings, usedOverrides, duplicateStamps) {
   // format label name — take the heaviest if several are set
   const labels = fieldValue(task, F.format);
   let format = "";
+  const unknownLabels = [];
   if (Array.isArray(labels)) {
     for (const l of labels) {
       const id = typeof l === "string" ? l : l && l.id;
+      if (!id) continue;
       const nm = FORMAT_NAME[id];
-      if (nm && (!format || (TIER_RANK[nm] || 0) > (TIER_RANK[format] || 0))) {
-        format = nm;
+      if (!nm) {
+        unknownLabels.push(id);
+        continue;
       }
+      if (!format || (TIER_RANK[nm] || 0) > (TIER_RANK[format] || 0)) format = nm;
     }
   }
 
@@ -400,7 +404,19 @@ function mapTask(task, warnings, usedOverrides, duplicateStamps) {
 
   if (ov && ov.format) format = ov.format;
 
-  if (!format) warnings.push(`${task.name}: no Format label — scored untiered`);
+  // "untiered" is scored at 1.0, so a label the tier table has never heard of
+  // quietly costs a Heavy batch half a point. Say which case it is.
+  if (!format) {
+    if (unknownLabels.length) {
+      warnings.push(
+        `${task.name}: Format label ${unknownLabels.join(", ")} is not in FORMAT_NAME ` +
+          `— scored untiered at 1.0`
+      );
+      unmappedFormats.push({ batch: task.name, editor: editorName, labelIds: unknownLabels });
+    } else {
+      warnings.push(`${task.name}: no Format label — scored untiered`);
+    }
+  }
 
   return {
     id: task.id,
@@ -429,8 +445,9 @@ export default async function handler(req, res) {
     const warnings = [];
     const usedOverrides = new Set();
     const duplicateStamps = [];
+    const unmappedFormats = [];
     const raw = await fetchAllTasks(token);
-    const mapped = raw.map((t) => mapTask(t, warnings, usedOverrides, duplicateStamps)).filter(Boolean);
+    const mapped = raw.map((t) => mapTask(t, warnings, usedOverrides, duplicateStamps, unmappedFormats)).filter(Boolean);
 
     // Cross-check stamped rounds against recorded time in "needs edits".
     let misclicksDropped = 0;
@@ -577,6 +594,7 @@ export default async function handler(req, res) {
       misclicksDropped,
       overridesApplied: [...usedOverrides],
       duplicateStamps,
+      unmappedFormats,
       manualCredits: creditsApplied,
       warnings,
     });
