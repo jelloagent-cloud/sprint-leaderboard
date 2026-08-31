@@ -409,7 +409,12 @@ function mapTask(task, warnings, usedOverrides, duplicateStamps, unmappedFormats
   // rather than an automatic correction.
   const distinctStamps = new Set(stamps).size;
   if (distinctStamps < rounds) {
-    const corrected = !!(ov && (ov.rounds !== undefined || ov.clean !== undefined));
+    // Any of these says something deliberate about whether the batch is clean,
+    // so the inflated stamp count is no longer deciding its points.
+    const corrected = !!(
+      ov &&
+      (ov.rounds !== undefined || ov.clean !== undefined || ov.cleanCount !== undefined)
+    );
     warnings.push(
       `${task.name}: ${rounds} Needs Edits stamps but only ${distinctStamps} distinct ` +
         `date(s) — one round may have been stamped twice. ` +
@@ -422,7 +427,7 @@ function mapTask(task, warnings, usedOverrides, duplicateStamps, unmappedFormats
       batch: task.name,
       stamps: rounds,
       distinctDates: distinctStamps,
-      overridden: !!(ov && ov.rounds !== undefined),
+      overridden: corrected,
     });
   }
 
