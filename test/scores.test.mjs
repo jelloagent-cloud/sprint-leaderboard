@@ -355,6 +355,41 @@ check("every copy reassigned, cleaned and re-tiered",
 check("date applied to every copy",
   [...new Set(five.map((t) => new Date(t.rtl).toISOString().slice(0, 10)))], ["2026-08-10"]);
 
+section("untiered format scores 1.0 (the osp-20 rule)");
+// The board's tier table has no "OSP" name, and an unrecognised format is
+// scored at exactly 1.0 — which is how an OSP ad gets its point.
+r = await run({ tasks: CORE, overrides: '{ "Batch#901": { format: "OSP" } }' });
+check("an unknown format name is passed through verbatim",
+  find(r.payload, "Batch#901")[0].format, "OSP");
+check("and reported as unmapped-free (it came from an override, not a label)",
+  r.payload.unmappedFormats.some((x) => x.batch === "Batch#901"), false);
+
+// the full osp-20 shape: double-stamped, waived, two ads, dated back a week
+r = await run({ tasks: CORE, overrides:
+  '{ "Batch#755": { rounds: 0, count: 2, format: "OSP", date: "2026-08-30" } }' });
+const osp = find(r.payload, "Batch#755");
+check("two ads", osp.length, 2);
+check("both clean with no rounds",
+  osp.map((t) => [t.ne, t.faults.length]), [["0", 0], ["0", 0]]);
+check("both carry the OSP label", [...new Set(osp.map((t) => t.format))], ["OSP"]);
+// dates are read as midnight in sprint-local time (CEST), so compare epochs
+// rather than a UTC date string — midnight Aug 30 CEST is Aug 29 22:00 UTC
+check("both dated to midnight CEST on the requested day",
+  [...new Set(osp.map((t) => t.rtl))], [Date.parse("2026-08-30T00:00:00+02:00")]);
+check("which lands inside the Aug 24-30 week, not the next one",
+  osp.every((t) => t.rtl >= Date.parse("2026-08-24T00:00:00+02:00")
+                && t.rtl < Date.parse("2026-08-31T00:00:00+02:00")), true);
+
+section("duplicate-stamp warning tells the truth once overridden");
+r = await run({ tasks: [...CORE, dupStamps] });
+check("uncorrected: says it is still counted and how to fix",
+  r.payload.warnings.some((w) => w.includes("OSP-18") && w.includes("Still counted as 2")), true);
+r = await run({ tasks: [...CORE, dupStamps], overrides: '{ "OSP-18": { rounds: 1 } }' });
+check("corrected: no longer claims it is still miscounted",
+  r.payload.warnings.some((w) => w.includes("OSP-18") && w.includes("Still counted")), false);
+check("corrected: says an override handles it",
+  r.payload.warnings.some((w) => w.includes("OSP-18") && w.includes("override already corrects")), true);
+
 section("MANUAL_CREDITS");
 const credit = `[{ batch: "Batch#793", editor: "Aakriti Choudhary", format: "AI-UGC",
   date: "2026-08-22", url: "https://app.clickup.com/t/86cawyxat", note: "mis-assignment" }]`;

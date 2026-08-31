@@ -142,6 +142,22 @@ const OVERRIDES = {
   // Equivalent in ClickUp: set CS Fault Revisions = 2 on the task, which the
   // weekly leaderboard would pick up too. See the note above the block.
   "Batch#865": { clean: true },
+
+  // NOTE THE LOWERCASE KEY: the ClickUp task is named "osp-20", not "OSP-20",
+  // and keys must match exactly.
+  // Pac's, finished with no revisions — the two Needs Edits stamps carry the
+  // same date (Sun 30 Aug), the same double-stamp artefact as OSP-18. Counts as
+  // two ads. Ben's rule is that OSP ads are worth 1.0 each, but its ClickUp
+  // label is AI-UGC (Standard, 1.2), so the label is overridden to "OSP": the
+  // board's tier table has no such name, and an unrecognised format scores
+  // exactly 1.0 — giving the 2.0 total Ben asked for. Its real Ready-to-Launch
+  // is Mon 31 Aug; dated back into the Aug 24-30 week as requested.
+  "osp-20": { rounds: 0, count: 2, format: "OSP", date: "2026-08-30" },
+
+  // Pac's, two videos under one ticket, already clean in ClickUp with no
+  // rounds, so `count` is the only key doing work. Animation is Light, so this
+  // is 2 x 1.0. Moved from Sun 30 Aug into the week starting Mon 31 Aug.
+  "Batch#835": { count: 2, date: "2026-08-31" },
 };
 
 // Batches credited to an editor by hand, with no ClickUp task behind them.
@@ -393,10 +409,14 @@ function mapTask(task, warnings, usedOverrides, duplicateStamps, unmappedFormats
   // rather than an automatic correction.
   const distinctStamps = new Set(stamps).size;
   if (distinctStamps < rounds) {
+    const corrected = !!(ov && (ov.rounds !== undefined || ov.clean !== undefined));
     warnings.push(
       `${task.name}: ${rounds} Needs Edits stamps but only ${distinctStamps} distinct ` +
-        `date(s) — one round may have been stamped twice; still counted as ${rounds}. ` +
-        `Confirm the real number and set OVERRIDES["${task.name}"] = { rounds: N }`
+        `date(s) — one round may have been stamped twice. ` +
+        (corrected
+          ? `An override already corrects this one.`
+          : `Still counted as ${rounds}: confirm the real number and set ` +
+            `OVERRIDES["${task.name}"] = { rounds: N }`)
     );
     duplicateStamps.push({
       batch: task.name,
